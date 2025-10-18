@@ -1,162 +1,88 @@
 pipeline {
     agent any
-
+    // triggers{
+    //     pollSCM('* * * * *')
+    // }
     environment {
-        VENV_DIR = "${WORKSPACE}/venv"
-        SONARQUBE = 'SonarQubeServer'
-        scannerHome = tool 'SonarQubeScanner'
-        IMAGE_NAME = 'ashish142/your-app-name'
+        AWS_ACCOUNT_ID = '156172784305'
+        AWS_REGION = 'ap-south-1'
+        ECR_REPO_NAME = 'acr-repo'
+        IMAGE_TAG = 'latest'  // You can dynamically set the build version
+        ECR_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
+        EMAIL = "shazathkhan1@gmail.com"
     }
 
     stages {
-        stage('Setup Python') {
+        stage('Checkout Code') {
             steps {
-                sh 'python3 -m venv venv'
-                sh './venv/bin/pip install --upgrade pip'
-                sh './venv/bin/pip install -r requirements.txt'
+                checkout scm
             }
         }
 
-        stage('Run Tests') {
+        stage('Login to ECR') {
             steps {
-                sh 'mkdir -p reports'
-                sh './venv/bin/pytest --junitxml=reports/test-results.xml'
-                sh './venv/bin/coverage xml'
+                sh '''
+                aws ecr get-login-password --region $AWS_REGION | \
+                docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                '''
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('Build Docker Image') {
             steps {
-                withSonarQubeEnv("${SONARQUBE}") {
-                    sh "${scannerHome}/bin/sonar-scanner"
-                }
+                sh '''
+                docker build -t $ECR_REPO_NAME .
+                '''
             }
         }
 
-        stage('Quality Gate') {
+        stage('Tag Docker Image') {
             steps {
-                timeout(time: 1, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
+                sh '''
+                docker tag $ECR_REPO_NAME:$IMAGE_TAG $ECR_URI
+                '''
             }
         }
 
-        stage('Trivy Filesystem Scan') {
+        stage('Push Image to ECR') {
             steps {
-                script {
-                    sh '''
-                        mkdir -p trivy-reports
-
-                        docker run --rm \
-                            -v $(pwd):/project \
-                            -v trivy-cache:/root/.cache/ \
-                            aquasec/trivy:latest \
-                            fs /project \
-                            --exit-code 1 \
-                            --severity HIGH,CRITICAL \
-                            --format table \
-                            --output /project/trivy-reports/fs-scan.txt
-                    '''
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'trivy-reports/fs-scan.txt', fingerprint: true
-                }
+                sh '''
+                docker push $ECR_URI
+                '''
             }
         }
 
-        stage('Docker Build') {
-            steps {
-                script {
-                    def GIT_COMMIT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.IMAGE_TAG = "${IMAGE_NAME}:${BUILD_NUMBER}-${GIT_COMMIT}"
-                    echo "Building Docker image: ${env.IMAGE_TAG}"
-                    sh "docker build -t ${env.IMAGE_TAG} ."
-                }
-            }
+      stage('Run Docker Container') {
+        steps {
+            sh '''
+                # Remove all existing Docker images
+                docker rmi -f $(docker images -q) || true
+
+                # Pull the latest image from ECR
+                docker pull $ECR_URI
+
+                # Stop and remove existing container named 'app'
+                docker stop app || true
+                docker rm app || true
+
+                # Run the container
+                docker run -d --name app -p 8000:5001 $ECR_URI
+            '''
         }
+}
 
-        stage('Trivy Docker Image Scan') {
-            steps {
-                script {
-                    sh 'mkdir -p trivy-reports'
-
-                    def trivyStatus = sh(
-                        script: """
-                            docker run --rm \
-                                -v ${env.WORKSPACE}:/workspace \
-                                -v /var/run/docker.sock:/var/run/docker.sock \
-                                -v trivy-cache:/root/.cache/ \
-                                aquasec/trivy:latest image ${env.IMAGE_TAG} \
-                                --exit-code 1 \
-                                --severity HIGH,CRITICAL \
-                                --format table \
-                                --output /workspace/trivy-reports/image-scan.txt
-
-                            docker run --rm \
-                                -v ${env.WORKSPACE}:/workspace \
-                                -v /var/run/docker.sock:/var/run/docker.sock \
-                                -v trivy-cache:/root/.cache/ \
-                                aquasec/trivy:latest image ${env.IMAGE_TAG} \
-                                --exit-code 0 \
-                                --severity HIGH,CRITICAL \
-                                --format json \
-                                --output /workspace/trivy-reports/image-scan.json
-                        """,
-                        returnStatus: true
-                    )
-
-                    if (trivyStatus != 0) {
-                        def userInput = input(
-                            message: "Trivy found HIGH or CRITICAL vulnerabilities in the Docker image. Proceed anyway?",
-                            parameters: [
-                                choice(name: 'Continue?', choices: ['No', 'Yes'], description: 'Select whether to proceed')
-                            ]
-                        )
-                        if (userInput == 'No') {
-                            error "Aborting pipeline due to Trivy scan failures."
-                        } else {
-                            echo "User approved to proceed despite Trivy vulnerabilities."
-                        }
-                    }
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'trivy-reports/image-scan.*', fingerprint: true
-                }
-            }
-        }
-
-        stage('Approval Before Push') {
-            steps {
-                input message: "Trivy scan passed (or was approved). Proceed with Docker image push?"
-                echo "User approved Docker push"
-                // Add your docker push or tag logic here
-            }
-        }
-
-        stage('Deploy') {
-            steps {
-                echo "Deploying image ${env.IMAGE_TAG}..."
-                // Add your deployment commands here
-            }
-        }
     }
 
     post {
-        always {
-            junit 'reports/test-results.xml'
-
-            publishHTML([
-                allowMissing: true,
-                alwaysLinkToLastBuild: true,
-                keepAll: true,
-                reportDir: '',
-                reportFiles: 'coverage.xml',
-                reportName: 'Coverage Report'
-            ])
+        success {
+            mail to: "${EMAIL}",
+                 subject: "Job '${env.JOB_NAME}' #${env.BUILD_NUMBER} Succeeded",
+                 body: "Good news! The Jenkins job succeeded."
+        }
+        failure {
+            mail to: "${EMAIL}",
+                 subject: "Job '${env.JOB_NAME}' #${env.BUILD_NUMBER} Failed",
+                 body: "Unfortunately, the Jenkins job failed. Please check the logs."
         }
     }
 }

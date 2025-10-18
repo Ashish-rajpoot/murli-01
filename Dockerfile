@@ -2,7 +2,7 @@
 FROM python:3.14.0rc3-bookworm
 
 # Set working directory
-WORKDIR /app  
+WORKDIR /app
 
 # Upgrade pip, install system dependencies, and update OS packages
 RUN apt-get update && \
@@ -11,7 +11,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better Docker layer caching
-COPY requirements.txt . 
+COPY requirements.txt .
 
 # Upgrade pip inside container and install Python dependencies
 RUN pip install --upgrade pip && \
@@ -21,7 +21,9 @@ RUN pip install --upgrade pip && \
 COPY . .
 
 # Expose port 5000
-EXPOSE 5000
+EXPOSE 5001
 
+ENTRYPOINT ["python", "app.py"]
 # Run the app
-CMD ["python", "app.py"]
+# CMD ["python", "app.py"]
+

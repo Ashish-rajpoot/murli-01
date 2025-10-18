@@ -6,6 +6,10 @@ app = Flask(__name__)
 def home():
     return jsonify({"message": "Welcome to the Home Route"}), 200
 
+@app.route("/murali", methods=["GET"])
+def home_m():
+    return jsonify({"message": "Welcome Murali "}), 200
+
 @app.route("/api/greet/<string:name>", methods=["GET"])
 def greet_user(name):
     return jsonify({"message": f"Hello, {name}!"}), 200
@@ -28,4 +32,4 @@ def not_found(error):
     return jsonify({"error": "Resource not found"}), 404
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)
